@@ -1,74 +1,104 @@
-# Deploy na VPS (Ubuntu 24.04)
+# Deploy na VPS Windows (Windows 11 / Windows Server)
 
-Resultado final, tudo atrás do Nginx na porta 80/443:
+Pensado para uma VPS com 8 GB de RAM e 4 vCPU, acessada por Área de Trabalho Remota (RDP).
+Todos os comandos são para o **PowerShell como Administrador**.
 
-| Caminho | O que é |
+Resultado final:
+
+| Endereço | O que é |
 |---|---|
 | `http://SEU_IP/` | App (paciente e nutricionista) em versão web |
 | `http://SEU_IP/api/` | API FastAPI (rodando só em `127.0.0.1:8000`) |
 | `http://SEU_IP/api/docs` | Documentação interativa da API |
 
-MySQL e a porta 8000 **não** ficam expostos na internet.
+| Peça | Função | Roda como |
+|---|---|---|
+| MySQL 8.4 | banco de dados | serviço do Windows (instalador já cria) |
+| API (uvicorn) | backend | serviço via **NSSM** |
+| Caddy | serve o app web e repassa `/api` para a API | serviço via **NSSM** |
+| Ollama (opcional) | IA do papo livre | serviço via **NSSM** |
 
-> Troque `SEU_IP` pelo IP da VPS (ou pelo seu domínio, se tiver um).
+MySQL (3306) e a API (8000) **não** ficam abertos para a internet — só as portas 80/443.
+
+> Troque `SEU_IP` pelo IP público da VPS (ou pelo seu domínio, se tiver).
 
 ---
 
-## 1. Pacotes do sistema
+## 1. Instalar as ferramentas
 
-```bash
-sudo apt update && sudo apt upgrade -y
-sudo apt install -y git python3 python3-venv python3-pip mysql-server nginx curl
-
-# Node 24 (para gerar a versão web do app)
-curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
-sudo apt install -y nodejs
+```powershell
+winget install --id Git.Git -e
+winget install --id Python.Python.3.13 -e
+winget install --id OpenJS.NodeJS.LTS -e
+winget install --id CaddyServer.Caddy -e
+winget install --id NSSM.NSSM -e
 ```
 
-Confira as versões: `python3 --version` (precisa ser **3.12 ou mais novo**) e `node --version`.
+**Feche e abra o PowerShell (como Administrador)** para o PATH atualizar, e confira:
+
+```powershell
+git --version; py -3.13 --version; node --version; caddy version; nssm version
+```
+
+> Se algum `winget install` disser que não encontrou o pacote, procure o nome certo com
+> `winget search caddy` (ou `nssm`, `python`...).
+
+Permita scripts do npm no PowerShell (só precisa uma vez):
+
+```powershell
+Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
+```
+
+### MySQL
+
+Baixe o **MySQL Community Server 8.4 LTS (Windows MSI)** em https://dev.mysql.com/downloads/mysql/ e instale:
+
+1. Tipo de instalação: **Typical** (ou só o Server).
+2. No configurador: *Development Computer* / *Server Computer*, porta **3306**.
+3. **Desmarque** "Open Windows Firewall ports for network access" (o banco não deve ficar exposto).
+4. Defina a **senha do root** e guarde.
+5. Deixe marcado **Configure MySQL Server as a Windows Service** e **Start at System Startup**.
+
+Para facilitar os próximos comandos:
+
+```powershell
+$mysql = "C:\Program Files\MySQL\MySQL Server 8.4\bin\mysql.exe"
+```
 
 ## 2. Baixar o projeto
 
-```bash
-sudo mkdir -p /opt/nutribuddy && sudo chown $USER:$USER /opt/nutribuddy
-git clone https://github.com/Tsumakyy/nutribuddy.git /opt/nutribuddy
-cd /opt/nutribuddy
+```powershell
+git clone https://github.com/Tsumakyy/nutribuddy.git C:\nutribuddy
+mkdir C:\nutribuddy\logs
 ```
 
-## 3. Banco de dados MySQL
+## 3. Banco de dados
 
-Gere uma senha forte e guarde-a:
+Gere uma senha forte **só com letras e números** (ela vai dentro de uma URL no `.env`):
 
-```bash
-openssl rand -base64 24
+```powershell
+-join ((48..57) + (65..90) + (97..122) | Get-Random -Count 28 | ForEach-Object { [char]$_ })
 ```
 
-Crie o banco e o usuário (cole a senha gerada no lugar de `SENHA_DO_BANCO`):
+Crie o banco e o usuário (vai pedir a senha do **root**; troque `SENHA_DO_BANCO` pela gerada acima):
 
-```bash
-sudo mysql <<'SQL'
-CREATE DATABASE nutribuddy CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER 'nutriapp'@'localhost' IDENTIFIED BY 'SENHA_DO_BANCO';
-GRANT ALL PRIVILEGES ON nutribuddy.* TO 'nutriapp'@'localhost';
-FLUSH PRIVILEGES;
-SQL
+```powershell
+& $mysql -u root -p -e "CREATE DATABASE nutribuddy CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; CREATE USER 'nutriapp'@'localhost' IDENTIFIED BY 'SENHA_DO_BANCO'; GRANT ALL PRIVILEGES ON nutribuddy.* TO 'nutriapp'@'localhost'; FLUSH PRIVILEGES;"
 ```
-
-> Se a senha tiver caracteres como `@`, `/` ou `:`, gere outra só com letras e números — ela vai dentro de uma URL no `.env`.
 
 ## 4. Backend
 
-```bash
-cd /opt/nutribuddy/backend
-python3 -m venv venv
-./venv/bin/pip install --upgrade pip
-./venv/bin/pip install -r requirements.txt
-cp .env.example .env
-python3 -c "import secrets; print(secrets.token_urlsafe(48))"   # copie: é o JWT_SECRET
-nano .env
+```powershell
+cd C:\nutribuddy\backend
+py -3.13 -m venv venv
+.\venv\Scripts\python.exe -m pip install --upgrade pip
+.\venv\Scripts\python.exe -m pip install -r requirements.txt
+Copy-Item .env.example .env
+.\venv\Scripts\python.exe -c "import secrets; print(secrets.token_urlsafe(48))"   # copie: é o JWT_SECRET
+notepad .env
 ```
 
-Deixe o `.env` assim:
+Deixe o `.env` assim e salve:
 
 ```ini
 DATABASE_URL=mysql+pymysql://nutriapp:SENHA_DO_BANCO@localhost:3306/nutribuddy?charset=utf8mb4
@@ -79,132 +109,157 @@ OLLAMA_URL=http://127.0.0.1:11434
 OLLAMA_MODEL=qwen2.5:3b
 ```
 
-```bash
-chmod 600 .env
+Teste (as tabelas são criadas automaticamente na primeira execução):
+
+```powershell
+.\venv\Scripts\python.exe -m unittest discover -s tests      # deve terminar com OK
+.\venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-Teste rápido (as tabelas são criadas automaticamente na primeira execução):
-
-```bash
-./venv/bin/python -m unittest discover -s tests          # deve terminar com OK
-./venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
-# em outro terminal: curl http://127.0.0.1:8000/health  →  {"status":"ok"}
-# depois pare com Ctrl+C
-```
+Em **outro** PowerShell: `Invoke-RestMethod http://127.0.0.1:8000/health` → deve mostrar `status: ok`.
+Depois volte ao primeiro e pare com `Ctrl+C`.
 
 ### Dados de teste (opcional)
 
-⚠️ **Apaga todos os usuários, dietas e conversas.** Rode só depois do teste acima (as tabelas precisam existir):
+⚠️ **Apaga todos os usuários, dietas e conversas.** Rode só depois do teste acima (as tabelas precisam existir).
+Vai pedir a senha do usuário `nutriapp`:
 
-```bash
-mysql -u nutriapp -p nutribuddy < /opt/nutribuddy/backend/sql/seed_teste.sql
+```powershell
+& $mysql -u nutriapp -p --default-character-set=utf8mb4 nutribuddy -e "source C:/nutribuddy/backend/sql/seed_teste.sql"
 ```
+
+> Use exatamente assim (com `source` e barras `/`). Redirecionar o arquivo com `Get-Content | mysql`
+> no PowerShell estraga os acentos.
 
 Acessos: `nutri@teste.com` e `ana@teste.com` … `joao@teste.com`, todos com senha `123456`.
 
-## 5. Backend como serviço (sobe sozinho e reinicia se cair)
+## 5. API como serviço do Windows
 
-```bash
-sudo tee /etc/systemd/system/nutribuddy-api.service > /dev/null <<EOF
-[Unit]
-Description=NutriBuddy API
-After=network.target mysql.service
-
-[Service]
-User=$USER
-WorkingDirectory=/opt/nutribuddy/backend
-ExecStart=/opt/nutribuddy/backend/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 2 --root-path /api --proxy-headers
-Restart=always
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-sudo systemctl daemon-reload
-sudo systemctl enable --now nutribuddy-api
-sudo systemctl status nutribuddy-api --no-pager
+```powershell
+nssm install nutribuddy-api "C:\nutribuddy\backend\venv\Scripts\python.exe" "-m uvicorn app.main:app --host 127.0.0.1 --port 8000 --root-path /api --proxy-headers"
+nssm set nutribuddy-api AppDirectory "C:\nutribuddy\backend"
+nssm set nutribuddy-api AppStdout "C:\nutribuddy\logs\api.log"
+nssm set nutribuddy-api AppStderr "C:\nutribuddy\logs\api.log"
+nssm set nutribuddy-api Start SERVICE_DELAYED_AUTO_START
+nssm start nutribuddy-api
+nssm status nutribuddy-api        # deve mostrar SERVICE_RUNNING
 ```
 
-Logs: `journalctl -u nutribuddy-api -f`
+Ver logs: `Get-Content C:\nutribuddy\logs\api.log -Tail 50 -Wait`
 
 ## 6. Versão web do app
 
-```bash
-cd /opt/nutribuddy/app_paciente
+```powershell
+cd C:\nutribuddy\app_paciente
 npm ci
-EXPO_PUBLIC_API_URL=http://SEU_IP/api npx expo export --platform web
+$env:EXPO_PUBLIC_API_URL = "http://SEU_IP/api"
+npx expo export --platform web
 ```
 
-Isso gera a pasta `dist/`. Se depois colocar domínio com HTTPS, gere de novo com `https://seudominio.com/api`.
+Isso gera a pasta `C:\nutribuddy\app_paciente\dist`.
 
-## 7. Nginx
+## 7. Caddy (site + proxy da API)
 
-```bash
-sudo tee /etc/nginx/sites-available/nutribuddy > /dev/null <<'EOF'
-server {
-    listen 80;
-    server_name _;
+Crie o arquivo de configuração:
 
-    root /opt/nutribuddy/app_paciente/dist;
-    index index.html;
+```powershell
+@'
+:80 {
+    encode gzip
 
-    location /api/ {
-        proxy_pass http://127.0.0.1:8000/;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 90s;   # o Buddy pode levar alguns segundos com o Ollama
+    handle_path /api/* {
+        reverse_proxy 127.0.0.1:8000 {
+            transport http {
+                read_timeout 90s
+            }
+        }
     }
 
-    location / {
-        try_files $uri $uri/ /index.html;
+    handle {
+        root * C:/nutribuddy/app_paciente/dist
+        try_files {path} /index.html
+        file_server
     }
 }
-EOF
-
-sudo ln -sf /etc/nginx/sites-available/nutribuddy /etc/nginx/sites-enabled/nutribuddy
-sudo rm -f /etc/nginx/sites-enabled/default
-sudo nginx -t && sudo systemctl reload nginx
+'@ | Set-Content -Encoding ascii C:\nutribuddy\Caddyfile
+caddy validate --config C:\nutribuddy\Caddyfile
 ```
 
-O Nginx precisa ler a pasta do app. Se a página der erro 403/404:
+Instale como serviço:
 
-```bash
-sudo chmod o+x /opt /opt/nutribuddy /opt/nutribuddy/app_paciente
-sudo chmod -R o+r /opt/nutribuddy/app_paciente/dist
+```powershell
+nssm install caddy (Get-Command caddy).Source "run --config C:\nutribuddy\Caddyfile"
+nssm set caddy AppDirectory "C:\nutribuddy"
+nssm set caddy AppStdout "C:\nutribuddy\logs\caddy.log"
+nssm set caddy AppStderr "C:\nutribuddy\logs\caddy.log"
+nssm start caddy
 ```
 
-Teste: `curl http://SEU_IP/api/health` e abra `http://SEU_IP` no navegador.
+Teste na própria VPS: `Invoke-RestMethod http://localhost/api/health` e abra `http://localhost` no navegador.
 
 ## 8. Firewall
 
-```bash
-sudo ufw allow OpenSSH
-sudo ufw allow 'Nginx Full'
-sudo ufw enable
+Libere só HTTP/HTTPS:
+
+```powershell
+New-NetFirewallRule -DisplayName "NutriBuddy HTTP/HTTPS" -Direction Inbound -Protocol TCP -LocalPort 80,443 -Action Allow
 ```
+
+Confirme que o MySQL **não** está liberado (não deve listar nada):
+
+```powershell
+Get-NetFirewallPortFilter | Where-Object LocalPort -in 3306,8000 | Get-NetFirewallRule | Where-Object Enabled -eq True
+```
+
+> Se o painel da VPS Outlet tiver firewall próprio, libere lá também as portas 80 e 443 (e a do RDP, 3389, que você já usa).
+
+Agora teste do seu computador: `http://SEU_IP`.
 
 ## 9. HTTPS (se tiver domínio apontando para a VPS)
 
-```bash
-sudo apt install -y certbot python3-certbot-nginx
-sudo sed -i 's/server_name _;/server_name seudominio.com;/' /etc/nginx/sites-available/nutribuddy
-sudo nginx -t && sudo systemctl reload nginx
-sudo certbot --nginx -d seudominio.com
+No `C:\nutribuddy\Caddyfile`, troque a primeira linha `:80 {` por `seudominio.com {` e reinicie:
+
+```powershell
+nssm restart caddy
 ```
 
-Depois refaça o passo 6 com `EXPO_PUBLIC_API_URL=https://seudominio.com/api`.
+O Caddy emite e renova o certificado sozinho. Depois refaça o passo 6 com
+`$env:EXPO_PUBLIC_API_URL = "https://seudominio.com/api"`.
 
-## 10. IA do papo livre (opcional)
+## 10. IA do papo livre com Ollama (opcional, recomendado com 8 GB)
 
-Sem o Ollama, **as trocas de alimentos funcionam normalmente**; só o papo livre usa respostas prontas. Para ativar (precisa de ~3 GB de RAM livres):
+Sem o Ollama, **as trocas de alimentos funcionam normalmente**; só o papo livre usa respostas prontas.
+O modelo `qwen2.5:3b` usa ~2,5 GB de RAM.
 
-```bash
-curl -fsSL https://ollama.com/install.sh | sh
+```powershell
+winget install --id Ollama.Ollama -e
+```
+
+O instalador abre o Ollama como aplicativo da bandeja, que **só roda com você logado**. Para rodar como serviço:
+
+1. Feche o Ollama da bandeja (ícone perto do relógio → *Quit Ollama*) e tire ele da inicialização:
+   *Gerenciador de Tarefas → Aplicativos de inicialização → Ollama → Desabilitar*.
+2. Guarde os modelos numa pasta fixa e baixe o modelo:
+
+```powershell
+mkdir C:\ollama\models
+[Environment]::SetEnvironmentVariable("OLLAMA_MODELS", "C:\ollama\models", "Machine")
+$env:OLLAMA_MODELS = "C:\ollama\models"
+$ollama = (Get-Command ollama).Source
+Start-Process $ollama "serve" -WindowStyle Hidden; Start-Sleep 5
 ollama pull qwen2.5:3b
-sudo systemctl restart nutribuddy-api
+Get-Process ollama* | Stop-Process -Force
+```
+
+3. Crie o serviço:
+
+```powershell
+nssm install ollama $ollama "serve"
+nssm set ollama AppEnvironmentExtra "OLLAMA_MODELS=C:\ollama\models" "OLLAMA_HOST=127.0.0.1:11434"
+nssm set ollama AppStdout "C:\nutribuddy\logs\ollama.log"
+nssm set ollama AppStderr "C:\nutribuddy\logs\ollama.log"
+nssm start ollama
+Invoke-RestMethod http://127.0.0.1:11434/api/tags      # deve listar qwen2.5:3b
 ```
 
 ## 11. Usar o app no celular apontando para a VPS
@@ -219,20 +274,38 @@ npm run start
 
 ## Atualizar depois de um novo `git push`
 
-```bash
-cd /opt/nutribuddy
+```powershell
+cd C:\nutribuddy
 git pull
-./backend/venv/bin/pip install -r backend/requirements.txt
-sudo systemctl restart nutribuddy-api
-cd app_paciente && npm ci && EXPO_PUBLIC_API_URL=http://SEU_IP/api npx expo export --platform web
+.\backend\venv\Scripts\python.exe -m pip install -r backend\requirements.txt
+nssm restart nutribuddy-api
+cd app_paciente
+npm ci
+$env:EXPO_PUBLIC_API_URL = "http://SEU_IP/api"
+npx expo export --platform web
 ```
+
+O Caddy passa a servir a nova versão do app automaticamente (não precisa reiniciar).
+
+## Comandos úteis
+
+| Para | Comando |
+|---|---|
+| Ver status dos serviços | `nssm status nutribuddy-api; nssm status caddy; nssm status ollama` |
+| Reiniciar a API | `nssm restart nutribuddy-api` |
+| Logs da API | `Get-Content C:\nutribuddy\logs\api.log -Tail 50 -Wait` |
+| Editar um serviço (tela gráfica) | `nssm edit nutribuddy-api` |
 
 ## Problemas comuns
 
 | Sintoma | Causa provável |
 |---|---|
-| `502 Bad Gateway` em `/api` | API parada: `journalctl -u nutribuddy-api -n 50` |
-| `Access denied for user 'nutriapp'` | senha do `.env` diferente da criada no MySQL |
-| Login no app diz que não conecta à API | `dist/` gerado com `EXPO_PUBLIC_API_URL` errado — refaça o passo 6 |
-| Buddy responde "não sei te ajudar" no papo livre | Ollama não instalado/rodando (opcional) |
+| `http://SEU_IP` não abre de fora, mas abre na VPS | firewall do Windows (passo 8) ou do painel da VPS |
+| `/api/...` responde 502 | API parada: `nssm status nutribuddy-api` e veja `logs\api.log` |
+| `Access denied for user 'nutriapp'` no log | senha do `.env` diferente da criada no MySQL |
+| `Can't connect to MySQL server` | serviço MySQL parado: `Get-Service MySQL*` / `Start-Service MySQL84` |
+| App diz que não conecta à API | `dist` gerado com `EXPO_PUBLIC_API_URL` errado — refaça o passo 6 |
+| `npx` não roda ("execução de scripts desabilitada") | `Set-ExecutionPolicy RemoteSigned -Scope CurrentUser` |
+| Acentos quebrados nos dados de teste | importe o seed com `source`, como no passo 4 |
 | `Table ... doesn't exist` ao rodar o seed | rode a API uma vez antes (passo 4) para criar as tabelas |
+| Buddy responde "não sei te ajudar" no papo livre | Ollama não instalado/rodando (passo 10, opcional) |
