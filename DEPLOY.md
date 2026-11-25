@@ -188,7 +188,8 @@ caddy validate --config C:\nutribuddy\Caddyfile
 Instale como serviço:
 
 ```powershell
-nssm install caddy (Get-Command caddy).Source "run --config C:\nutribuddy\Caddyfile"
+$caddy = (Get-Command caddy).Source
+nssm install caddy $caddy "run --config C:\nutribuddy\Caddyfile"
 nssm set caddy AppDirectory "C:\nutribuddy"
 nssm set caddy AppStdout "C:\nutribuddy\logs\caddy.log"
 nssm set caddy AppStderr "C:\nutribuddy\logs\caddy.log"

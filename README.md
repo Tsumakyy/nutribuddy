@@ -84,4 +84,4 @@ As imagens dos animais são do [Microsoft Fluent Emoji](https://github.com/micro
 
 ## Deploy
 
-Passo a passo para subir em uma VPS Ubuntu: [DEPLOY.md](DEPLOY.md).
+Passo a passo para subir em uma VPS Windows: [DEPLOY.md](DEPLOY.md).
